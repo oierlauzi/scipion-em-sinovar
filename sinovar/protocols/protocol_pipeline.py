@@ -80,7 +80,7 @@ class SinovarPipeline(EMProtocol):
         form.addParam('components', params.IntParam,
                       label='Number of embedding components',
                       default=16 )
-        form.addParam('tiltSize', params.IntParam,
+        form.addParam('tileSize', params.IntParam,
                       label='Tile size',
                       default=128 )
 
@@ -104,12 +104,16 @@ class SinovarPipeline(EMProtocol):
         args += ['-i', self._getInputStarFilename()]
         args += ['-o', self._getOutputStarFilename()]
         args += ['-d', self._getDistanceMatrixFilename()]
-        args += ['--prefix', self._getPath()]
         args += ['--resolution', self.resolution.get()]
         args += ['--diameter', self.diameter.get()]
         args += ['--components', self.components.get()]
         args += ['--block_size', self.tileSize.get()]
 
+        gpus = self.getGpuList()
+        if gpus:
+            args += ['--device']
+            args += list(map('gpu:{:d}'.format, gpus))
+            
         Plugin.runSinovar(self, program, args)
         
     def createOutputStep(self):
