@@ -26,24 +26,28 @@
 # *
 # **************************************************************************
 
-import os
-
+import ast
 from pyworkflow.constants import BETA
 from pyworkflow.protocol.constants import LEVEL_ADVANCED
 import pyworkflow.protocol.params as params
 from pyworkflow.utils import Message
-from pyworkflow.utils.path import createLink, makePath
 
-from pwem.objects import SetOfParticles, SetOfParticlesFlex
+from pwem.objects import SetOfParticles, Particle, SetOfParticlesFlex, ParticleFlex
 from pwem.protocols import EMProtocol
+from emtable import Table
 
 from sinovar import Plugin
 from sinovar.constants import SINOVAR
 from relion.convert import writeSetOfParticles
 
+OUTPUT_PARTICLES = 'particles'
+
 class SinovarPipeline(EMProtocol):
     _label = 'pipeline'
     _devStatus = BETA
+    __possible_outputs = {
+        OUTPUT_PARTICLES: SetOfParticlesFlex
+    }
     
     def _defineParams(self, form: params.Form):
         form.addSection(label=Message.LABEL_INPUT)
@@ -117,17 +121,28 @@ class SinovarPipeline(EMProtocol):
         Plugin.runSinovar(self, program, args)
         
     def createOutputStep(self):
-        fields = self._getOutputFields()
-        for field in fields:
-            outputParticles: SetOfParticlesFlex = SetOfParticlesFlex.create(
-                self._getPath(),
-                suffix=field,
-                progName=SINOVAR
-            )
-            outputParticles.copyInfo(self.inputParticles.get())
-            
-            self._defineOutputs(**{field: outputParticles})
-            self._defineSourceRelation(self.inputParticles, outputParticles)
+        outputParticles: SetOfParticlesFlex = SetOfParticlesFlex.create(
+            self._getPath(),
+            progName=SINOVAR
+        )
+        outputParticles.copyInfo(self.inputParticles.get())
+        
+        star = Table()
+        star.read(
+            self._getOutputStarFilename(),
+            tableName='particles'
+        )
+        embeddings = star.getColumnValues('sinovarEmbedding')
+        
+        particle: Particle
+        for particle, embedding in zip(self.inputParticles.get(), embeddings):
+            flexParticle = ParticleFlex('recovar')
+            flexParticle.copyInfo(particle)
+            flexParticle.setZFlex(ast.literal_eval(embedding))
+            outputParticles.append(flexParticle)
+        
+        self._defineOutputs(**{OUTPUT_PARTICLES: outputParticles})
+        self._defineSourceRelation(self.inputParticles, outputParticles)
 
     # --------------------------- INFO functions ---------------------------------
     # --------------------------- UTILS functions --------------------------------
@@ -139,4 +154,3 @@ class SinovarPipeline(EMProtocol):
 
     def _getDistanceMatrixFilename(self) -> str:
         return self._getExtraPath('distances.npy')
-
