@@ -106,6 +106,8 @@ class SinovarDistance(EMProtocol):
         if gpus:
             args += ['--device']
             args += list(map('gpu:{:d}'.format, gpus))
+        else:
+            args += ['--device', 'cpu']
             
         Plugin.runSinovar(self, program, args)
         
