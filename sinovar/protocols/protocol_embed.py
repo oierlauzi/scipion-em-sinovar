@@ -38,12 +38,12 @@ from emtable import Table
 
 from sinovar import Plugin
 from sinovar.constants import SINOVAR
-from relion.convert import writeSetOfParticles
+from .protocol_distance import SinovarDistance
 
 OUTPUT_PARTICLES = 'particles'
 
-class SinovarPipeline(EMProtocol):
-    _label = 'pipeline'
+class SinovarEmbed(EMProtocol):
+    _label = 'embed'
     _devStatus = BETA
     __possible_outputs = {
         OUTPUT_PARTICLES: SetOfParticlesFlex
@@ -52,66 +52,39 @@ class SinovarPipeline(EMProtocol):
     def _defineParams(self, form: params.Form):
         form.addSection(label=Message.LABEL_INPUT)
 
-        form.addHidden(params.USE_GPU, params.BooleanParam, default=True,
-                           expertLevel=LEVEL_ADVANCED,
-                           label="Use GPU?",
-                           help="Set to True if you want to use GPU implementation."
-                           )
-        
-        form.addHidden(params.GPU_LIST, params.StringParam, default='0',
-                       expertLevel=LEVEL_ADVANCED,
-                       label="Choose GPU IDs",
-                       help="GPU may have several cores. Set it to zero"
-                            " if you do not know what we are talking about."
-                            " First core index is 0, second 1 and so on."
-                            " Sinovar can use multiple GPUs - in that case"
-                            " set to i.e. *0 1 2*."
-                            )
-
-        form.addParam('inputParticles', params.PointerParam,
-                      pointerClass = SetOfParticles,
-                      pointerCondition = 'hasAlignmentProj', # TODO: Add validation for CTF in the validation
+        form.addParam('distanceProtocol', params.PointerParam,
+                      pointerClass = SinovarDistance,
                       important = True,
-                      label = 'Input particles',
+                      label = 'Distance protocol',
                       allowsNull = False,
-                      help = ''
                       )
         
-        form.addParam('diameter', params.FloatParam,
-                      label='Diameter (A)')
-        form.addParam('resolution', params.FloatParam,
-                      label='Resolution (A)')
         form.addParam('components', params.IntParam,
                       label='Number of embedding components',
+                      default=8 )
+        form.addParam('sigmaNn', params.IntParam,
+                      label='Number of NN used to estimate sigma',
                       default=16 )
-        form.addParam('tileSize', params.IntParam,
-                      label='Tile size',
-                      default=128 )
+        form.addParam('affinityNn', params.IntParam,
+                      label='Number of NN used for the affinity matrix',
+                      default=4096 )
 
     # --------------------------- STEPS functions ------------------------------
 
     def _insertAllSteps(self):
-        self._insertFunctionStep(self.convertInputStep)
         self._insertFunctionStep(self.runSinovarStep)
         self._insertFunctionStep(self.createOutputStep)
 
-    def convertInputStep(self):
-        writeSetOfParticles(
-            self.inputParticles.get(), 
-            self._getInputStarFilename()
-        )
-        
     def runSinovarStep(self):
         program = 'sinovar'
 
-        args = []
+        args = ['embed']
         args += ['-i', self._getInputStarFilename()]
-        args += ['-o', self._getOutputStarFilename()]
         args += ['-d', self._getDistanceMatrixFilename()]
-        args += ['--resolution', self.resolution.get()]
-        args += ['--diameter', self.diameter.get()]
+        args += ['-o', self._getOutputStarFilename()]
         args += ['--components', self.components.get()]
-        args += ['--block_size', self.tileSize.get()]
+        args += ['--sigma_k', self.sigmaNn.get()]
+        args += ['--affinity_k', self.affinityNn.get()]
 
         gpus = self.getGpuList()
         if gpus:
@@ -121,11 +94,13 @@ class SinovarPipeline(EMProtocol):
         Plugin.runSinovar(self, program, args)
         
     def createOutputStep(self):
+        inputParticles: SetOfParticles = \
+            self._getDistanceProtocol().inputParticles.get()
         outputParticles: SetOfParticlesFlex = SetOfParticlesFlex.create(
             self._getPath(),
             progName=SINOVAR
         )
-        outputParticles.copyInfo(self.inputParticles.get())
+        outputParticles.copyInfo(inputParticles)
         
         star = Table()
         star.read(
@@ -135,22 +110,28 @@ class SinovarPipeline(EMProtocol):
         embeddings = star.getColumnValues('sinovarEmbedding')
         
         particle: Particle
-        for particle, embedding in zip(self.inputParticles.get(), embeddings):
-            flexParticle = ParticleFlex('recovar')
+        for particle, embedding in zip(inputParticles, embeddings):
+            flexParticle = ParticleFlex(SINOVAR)
             flexParticle.copyInfo(particle)
             flexParticle.setZFlex(ast.literal_eval(embedding))
             outputParticles.append(flexParticle)
         
         self._defineOutputs(**{OUTPUT_PARTICLES: outputParticles})
-        self._defineSourceRelation(self.inputParticles, outputParticles)
+        self._defineSourceRelation(
+            self._getDistanceProtocol().inputParticles, 
+            outputParticles
+        )
 
-    # --------------------------- INFO functions ---------------------------------
-    # --------------------------- UTILS functions --------------------------------
+    # -------------------------- INFO functions --------------------------------
+    # -------------------------- UTILS functions -------------------------------
+    def _getDistanceProtocol(self) -> SinovarDistance:
+        return self.distanceProtocol.get()
+        
     def _getInputStarFilename(self) -> str:
-        return self._getExtraPath('images.star')
+        return self._getDistanceProtocol()._getInputStarFilename()
+
+    def _getDistanceMatrixFilename(self) -> str:
+        return self._getDistanceProtocol()._getDistanceMatrixFilename()
 
     def _getOutputStarFilename(self) -> str:
         return self._getExtraPath('embedding.star')
-
-    def _getDistanceMatrixFilename(self) -> str:
-        return self._getExtraPath('distances.npy')
